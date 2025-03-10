@@ -1,24 +1,29 @@
-# LEGO type:standard slot:0
+# LEGO type:standard slot:0 autostart
 
-# correzzione i base alla batteria
+
 
 from spike import PrimeHub, Motor, MotorPair, ColorSensor
 from hub import battery
-import sys, time, hub
+import sys, time
 
 # definire l'oggetto che rappresenta l'hub (il robot in sè)
 spike = PrimeHub()
-
 
 # configurazione del robot
 movement_motors = MotorPair('A', 'B')
 motoreSinistro = Motor('A')
 motoreDestro = Motor('B')
+smallMotorC = Motor('C')
+smallMotorD = Motor('D')
+colorSensor = ColorSensor('E')
+#grandezza_ruote = float('x') #inserire il numero corretto (circonferenza), al momento (20 agosto) non ne ho la più pallida idea
+
 # costanti PID (da modificare in base al comportamento del robot)
-Kp = 0.01
+Kp = 0
 Ki = 0
 Kd = 0
 
+run_multithreading = True #variabile per l'esecuzione di più comandi contemporaneamente (es: muovere un braccio mentre il robot è in movimento)
 gyroValue = 0 #valore dell'angolo misurato dal giroscopio
 runSmall = True
 
@@ -45,9 +50,10 @@ class Movimenti:
             vaiDrittoPID(1000, 80, multithreading=multithreading )
         '''
         global Kp, Ki, Kd
-        global run_multithreading, runSmall, inMain
+        global run_multithreading, runSmall
 
-
+        if multithreading == None:
+            run_multithreading = False
 
         loop = True
 
@@ -68,6 +74,8 @@ class Movimenti:
         distanzaCompiuta = ottieniDistanzaCompiuta(self)
 
         while loop:
+            if run_multithreading:#eseguire una funzione simultaneamente se definita nel parametro
+                next(multithreading)
 
             angolo = spike.motion_sensor.get_yaw_angle()    #In un loop, calcola l'angolo misurato dal giroscopio
             distanzaCompiuta = ottieniDistanzaCompiuta(self) # e calcola la distanza percorsa grazie alla funzione definita sotto
@@ -79,26 +87,32 @@ class Movimenti:
             derivata = errore - erroreVecchio#imposta la derivata come la differenza tra l'errore attuale e l'errore precedente (la derivata tiene conto di come cambia l'errore nel tempo)
 
             correzione = (errore * Kp + integrale * Ki + derivata * Kd) #calcola la correzione
-            correzione = max(-100, min(corgit config --global sequence.editor "nano -w"rezione, 100))#limita la correzione entro i valori di -100 e 100
-            print(Kp)
-            time.sleep(1)
-            Kp += Kp/3
+            correzione = max(-100, min(correzione, 100))#limita la correzione entro i valori di -100 e 100
+
             erroreVecchio = errore
 
             self.movement_motors.start_at_power(int(velocità), int(correzione) * -1) # muove in avanti il robot alla velocità definita dal parametro e sterzando a destra o a sinistra in base alla correzione
+
             if distanzaCompiuta >= distanza: #se la distanza compiuta è maggiore o uguale alla distanza impostata, esci dal loop
                 loop = False
 
         self.movement_motors.stop()# Assicuriamoci di fermare i motori alla fine
+        run_multithreading = True
         runSmall = True
         multithreading = 0
         time.sleep(0.2)
         return
 
-        global gyroValue, inMain
+    def ciroscopio(self, angolo, verso):
+        """
+        Ruota il robot di un certo angolo in una direzione specifica.
 
-        if inMain:
-            return
+        Parametri:
+        angolo: Angolo di rotazione del robot (in gradi)
+        verso: Direzione di rotazione (1 per destra, -1 per sinistra)
+        """
+
+        global gyroValue
 
         if verso not in [1, -1]:
             raise ValueError("Il verso deve essere 1 (destra) o -1 (sinistra)")# Verifica che il verso sia valido, altrimenti solleva un errore
@@ -106,27 +120,15 @@ class Movimenti:
         target = (normalize_angle(angolo)) * verso
         gyroValue = spike.motion_sensor.get_yaw_angle()
         if verso == 1:
-            movement_motors.start_tank_at_power(25, -30)
+            movement_motors.start_tank_at_power(30, -25)
             while gyroValue < target - 1:
                 gyroValue = spike.motion_sensor.get_yaw_angle()
-                if inMain:
-                    break
-
-                if self.spike.left_button.is_pressed():
-                    inMain = True
-                    break
                 #print(gyroValue)
             movement_motors.stop()
         elif verso == -1:
-            movement_motors.start_tank_at_power(-30, 25)
+            movement_motors.start_tank_at_power(-25, 30)
             while gyroValue > target + 1:
                 gyroValue = spike.motion_sensor.get_yaw_angle()
-                if inMain:
-                    break
-
-                if self.spike.left_button.is_pressed():
-                    inMain = True
-                    break
                 #print(gyroValue)
             movement_motors.stop()
         time.sleep(0.2)
@@ -143,6 +145,9 @@ class Movimenti:
 
         global Kp
         global run_multithreading
+
+        if multithreading == None:
+            run_multithreading = False
 
         self.left_Startvalue = self.motoreSinistro.get_degrees_counted()
         self.right_Startvalue = self.motoreDestro.get_degrees_counted()
@@ -166,6 +171,67 @@ class Movimenti:
         multithreading = 0
         return
 
+    def seguiLinea(self, distanza, velocità, lato, multithreading = None):
+        '''
+        distanza: quanto si deve spostare il robot (in gradi)
+        velocità: a che velocità si deve muovere
+        lato: su quale lato della linea il robot deve seguire ('sinistra' o 'destra')
+        multithreading: definire la funzione che si vuole eseguire mentre il robot si sposta Es:
+
+            multithreading = avviaMotore(5, 100, 'C')
+            vaiDrittoPID(1000, 80, multithreading=multithreading )
+        '''
+        global Kp, Ki, Kd, run_multithreading, runSmall, colorSensor# Dichiarazione delle variabili globali
+
+        if multithreading == None:
+            run_multithreading = False# Se non c'è multithreading, imposta la variabile a False
+
+        errore = 0# Inizializza l'errore corrente
+        erroreVecchio = 0# Inizializza l'errore precedente
+        integrale = 0# Inizializza l'integrale dell'errore
+        derivata = 0# Inizializza la derivata dell'errore
+
+        loop = True# Imposta il flag del loop principale
+
+        if distanza < 0:
+            print('ERR: distance < 0')
+            distanza = abs(distanza)# Assicura che la distanza sia positiva
+
+        invert = 1# Inizializza il fattore di inversione
+        if lato == 'sinistra':
+            invert = 1# Se il lato è 'sinistra', mantieni invert a 1
+        elif lato == 'destra':
+            invert = -1# Se il lato è 'destra', imposta invert a -1
+
+        self.left_Startvalue = self.leftMotor.get_degrees_counted()# Memorizza la posizione iniziale del motore sinistro
+        self.right_Startvalue = self.rightMotor.get_degrees_counted()# Memorizza la posizione iniziale del motore destro
+        distanzaCompiuta = ottieniDistanzaCompiuta(self)# Calcola la distanza iniziale percorsa
+
+        while loop:
+            if run_multithreading:
+                next(multithreading)# Esegue il prossimo passo della funzione di multithreading se attiva
+
+            distanzaCompiuta = ottieniDistanzaCompiuta(self)# Aggiorna la distanza percorsa
+
+            calcoloPID(velocità)# Calcola i parametri PID in base alla velocità
+
+            erroreVecchio = errore# Memorizza l'errore precedente
+            errore = colorSensor.get_reflected_light() - 50# Calcola l'errore basato sulla lettura del sensore di colore
+            integrale += errore# Aggiorna l'integrale dell'errore
+            derivata = errore - erroreVecchio# Calcola la derivata dell'errore
+            correzione = (errore * Kp + integrale * Ki + derivata * Kd) * invert# Calcola la correzione PID
+            correzione = max(-100, min(correzione, 100))# Limita la correzione tra -100 e 100
+
+            self.movement_motors.start_at_power(int(velocità), int(correzione))# Avvia i motori con la velocità e la correzione calcolate
+
+            if distanzaCompiuta >= distanza:
+                loop = False# Termina il loop se la distanza percorsa è maggiore o uguale a quella richiesta
+
+        self.movement_motors.stop()# Ferma i motori
+        run_multithreading = True# Ripristina il flag del multithreading
+        runSmall = True# Ripristina il flag runSmall
+        multithreading = 0# Resetta la variabile multithreading
+        return# Termina la funzione
 
 # Altre funzioni ausiliarie
 def resetGyroValue(): #Resetta il valore dell'angolo misurato dal giroscopio a 0
@@ -181,25 +247,29 @@ def calcoloPID(velocità): #Calcola le costanti che regolano il PID in base alla
     global Ki
     global Kd
 
+    if velocità >= 75:
+        Kp = 14
+        Ki = 0
+        Kd = 3
+    elif 40 <= velocità < 75:
+        Kp = 18.4
+        Ki = 0
+        Kd = 5
+    elif velocità < 40:
+        Kp = 28
+        Ki = 0.25
+        Kd = 1.5
 
-def avviaMotore(gradi, velocità, porta, spike): #Permette di muovere un motore secondario mentre il robot si sposta
+def avviaMotore(gradi, velocità, porta): #Permette di muovere un motore secondario mentre il robot si sposta
     '''
     rotazioni: quante rotazioni vuoi che compia il motore piccolo (1 rotazione = 360 gradi ovviamente)
     velocità: a quale velocità desideri che il motore vada
     porta: a quale porta è connesso il motore piccolo che vuoi muovere
     '''
-    global runSmall, run_multithreading, inMain
-
-    if inMain:
-        return
+    global runSmall
+    global run_multithreading
 
     while runSmall:
-        if inMain:
-                break
-
-        if spike.left_button.is_pressed():
-            inMain = True
-            break
         motor = Motor(porta)
         motor.set_degrees_counted(0)
 
@@ -246,11 +316,25 @@ if battery.voltage() < 8000:
 else:
     print(bcolors.BATTERY + "livello batteria: " + str(battery.voltage()) + bcolors.ENDC)
 
+#inizio -------------------------------------------------------------------------------------------------------------------------------------
 
-#missione
-mv.vaiDrittoPID(100000,25)
-
-
-
-
-sys.exit()
+mv.vaiDrittoPID(150, 50) # partenza
+mv.ciroscopio(51, -1) # sinistra in area
+mv.vaiDrittoPID(1400, 50) # fino a tridente
+mv.ciroscopio(60,1)
+mv.vaiDrittoPID(450,50)
+# movement_motors.move(200,unit="degrees",steering=-80,speed=40)
+mv.ciroscopio(72, 1) #  guarda lato destro
+mv.vaiDrittoPID(350, 50) # fino a pre-pianta
+smallMotorC.run_for_degrees(720, 100)
+mv.vaiDrittoPID(300,40)
+smallMotorC.run_for_degrees(180, -50)
+mv.ciroscopio(10,1)
+mv.vaiDrittoPID(350,50)
+"""
+movement_motors.move(330, unit="degrees" , steering=0 , speed=-30)
+mv.ciroscopio(13, 1) # guarda pianta
+mv.vaiDrittoPID(200, 50) # fino a pianto
+movement_motors.move(330, unit="degrees", steering=0, speed=-30) # torna indietro
+mv.ciroscopio(86, 1) # raccogli gamberi
+movement_motors.move(1300,unit="degrees",steering=-15,speed=100)"""
